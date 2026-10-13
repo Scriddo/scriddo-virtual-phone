@@ -4,12 +4,21 @@ name: Scriddo Android 16 Boot Test
 on:
   workflow_dispatch:
 
+permissions:
+  contents: read
+
 jobs:
   android:
     runs-on: ubuntu-latest
-    timeout-minutes: 20
+    timeout-minutes: 25
 
     steps:
+      - name: Clear Android SDK download cache
+        run: |
+          rm -rf "$HOME/.android/cache"
+          rm -rf "$HOME/.android/avd"
+          mkdir -p "$HOME/.android"
+
       - name: Boot Android 16
         uses: reactivecircus/android-emulator-runner@v2
         with:
@@ -20,8 +29,9 @@ jobs:
           emulator-boot-timeout: 600
           emulator-options: -no-window -gpu swiftshader_indirect -noaudio -no-boot-anim -no-snapshot
           script: |
-            echo "Checking Android..."
+            echo "Android version:"
             adb shell getprop ro.build.version.release
+            echo "Android SDK level:"
             adb shell getprop ro.build.version.sdk
-            echo "Android emulator is ready!"
+            echo "Android emulator booted successfully!"
             
