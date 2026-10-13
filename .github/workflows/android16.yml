@@ -10,21 +10,17 @@ permissions:
 jobs:
   android:
     runs-on: ubuntu-latest
-    timeout-minutes: 50
-
-    env:
-      DISPLAY: ":99"
+    timeout-minutes: 45
 
     steps:
       - name: Enable KVM
         run: |
-          sudo mkdir -p /etc/udev/rules.d
           echo 'KERNEL=="kvm", GROUP="kvm", MODE="0666", OPTIONS+="static_node=kvm"' | sudo tee /etc/udev/rules.d/99-kvm4all.rules
           sudo udevadm control --reload-rules
           sudo udevadm trigger --name-match=kvm
           ls -l /dev/kvm || true
 
-      - name: Install emulator dependencies and remote desktop
+      - name: Install dependencies
         run: |
           sudo apt-get update
           sudo apt-get install -y \
@@ -44,7 +40,7 @@ jobs:
           VNC_PASSWORD: ${{ secrets.VNC_PASSWORD }}
         run: |
           test -n "$VNC_PASSWORD" || {
-            echo "Missing VNC_PASSWORD repository secret."
+            echo "Add VNC_PASSWORD in Settings > Secrets and variables > Actions."
             exit 1
           }
           x11vnc -storepasswd "$VNC_PASSWORD" /tmp/vnc.pass
@@ -57,7 +53,7 @@ jobs:
             -o /tmp/cloudflared
           chmod +x /tmp/cloudflared
 
-      - name: Start Android 16 and remote access
+      - name: Start Android 16
         uses: reactivecircus/android-emulator-runner@v2
         with:
           api-level: 36
@@ -74,31 +70,24 @@ jobs:
             adb shell getprop ro.build.version.release
             adb shell getprop ro.build.version.sdk
 
-            echo "Starting virtual display..."
-            Xvfb :99 -screen 0 1280x900x24 -ac \
-              > /tmp/xvfb.log 2>&1 &
+            echo "Starting virtual desktop..."
+            Xvfb :99 -screen 0 1280x900x24 -ac >/tmp/xvfb.log 2>&1 &
+            sleep 3
+            export DISPLAY=:99
+
+            fluxbox >/tmp/fluxbox.log 2>&1 &
             sleep 2
 
-            fluxbox > /tmp/fluxbox.log 2>&1 &
-            sleep 2
-
-            echo "Starting VNC server..."
-            x11vnc -display :99 -localhost \
-              -rfbauth /tmp/vnc.pass \
-              -forever -shared -bg
+            echo "Starting VNC..."
+            x11vnc -display :99 -localhost -rfbauth /tmp/vnc.pass -forever -shared -bg
 
             echo "Starting noVNC..."
-            /tmp/noVNC/utils/novnc_proxy \
-              --listen 127.0.0.1:6080 \
-              --vnc 127.0.0.1:5900 \
-              > /tmp/novnc.log 2>&1 &
+            /tmp/noVNC/utils/novnc_proxy --listen 127.0.0.1:6080 --vnc 127.0.0.1:5900 >/tmp/novnc.log 2>&1 &
 
             echo "Starting temporary tunnel..."
-            /tmp/cloudflared tunnel \
-              --no-autoupdate \
-              --url http://127.0.0.1:6080 \
-              > /tmp/tunnel.log 2>&1 &
+            /tmp/cloudflared tunnel --no-autoupdate --url http://127.0.0.1:6080 >/tmp/tunnel.log 2>&1 &
 
+            URL=""
             for i in $(seq 1 30); do
               URL=$(grep -oE 'https://[-a-zA-Z0-9.]+\.trycloudflare\.com' /tmp/tunnel.log | head -1 || true)
               if [ -n "$URL" ]; then
@@ -107,16 +96,13 @@ jobs:
               sleep 2
             done
 
-            if [ -z "${URL:-}" ]; then
-              echo "Tunnel URL was not created."
+            if [ -z "$URL" ]; then
+              echo "No tunnel URL was created."
               cat /tmp/tunnel.log
               exit 1
             fi
 
-            echo "======================================"
-            echo "Temporary remote access URL:"
-            echo "${URL}/vnc.html"
-            echo "======================================"
-            echo "Keeping session alive for up to 30 minutes."
-            sleep 1800
+            echo "Temporary browser link: ${URL}/vnc.html"
+            echo "Session will remain active for 25 minutes."
+            sleep 1500
             
