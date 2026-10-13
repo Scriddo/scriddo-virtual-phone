@@ -1,5 +1,5 @@
 
-name: Android 16 Test
+name: Android 16 Remote Phone
 
 on:
   workflow_dispatch:
@@ -7,29 +7,63 @@ on:
 jobs:
   android:
     runs-on: ubuntu-latest
-    timeout-minutes: 20
+    timeout-minutes: 55
+
+    env:
+      DISPLAY: ":99"
 
     steps:
-      - name: Enable KVM permissions
+      - name: Enable KVM
         run: |
-          sudo mkdir -p /etc/udev/rules.d
           echo 'KERNEL=="kvm", GROUP="kvm", MODE="0666", OPTIONS+="static_node=kvm"' | sudo tee /etc/udev/rules.d/99-kvm4all.rules
           sudo udevadm control --reload-rules
           sudo udevadm trigger --name-match=kvm
-          ls -l /dev/kvm
 
-      - name: Boot Android 16 emulator
+      - name: Install remote desktop
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y xvfb fluxbox x11vnc
+          git clone --depth 1 https://github.com/novnc/noVNC.git /tmp/noVNC
+          git clone --depth 1 https://github.com/novnc/websockify.git /tmp/noVNC/utils/websockify
+
+      - name: Start graphical display
+        env:
+          VNC_PASSWORD: ${{ secrets.VNC_PASSWORD }}
+        run: |
+          test -n "$VNC_PASSWORD" || { echo "Missing VNC_PASSWORD secret"; exit 1; }
+          Xvfb :99 -screen 0 1280x900x24 > /tmp/xvfb.log 2>&1 &
+          sleep 3
+          fluxbox > /tmp/fluxbox.log 2>&1 &
+          x11vnc -storepasswd "$VNC_PASSWORD" /tmp/vnc.pass > /dev/null
+          x11vnc -display :99 -localhost -rfbauth /tmp/vnc.pass -forever -shared -bg
+          /tmp/noVNC/utils/novnc_proxy --listen 127.0.0.1:6080 --vnc 127.0.0.1:5900 > /tmp/novnc.log 2>&1 &
+
+      - name: Install Cloudflare tunnel
+        run: |
+          curl -fsSL https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-linux-amd64 -o /tmp/cloudflared
+          chmod +x /tmp/cloudflared
+
+      - name: Start Android 16
         uses: reactivecircus/android-emulator-runner@v2
         with:
           api-level: 36
           target: google_apis
           arch: x86_64
           profile: pixel_7
-          disk-size: 8G
           emulator-boot-timeout: 600
-          emulator-options: -no-window -gpu swiftshader_indirect -noaudio -no-boot-anim
+          emulator-options: -gpu swiftshader_indirect -noaudio -no-boot-anim -no-snapshot -no-metrics
           script: |
-            adb wait-for-device
+            echo "Android version:"
             adb shell getprop ro.build.version.release
-            adb shell getprop ro.build.version.sdk
+
+            echo "Starting remote access..."
+            /tmp/cloudflared tunnel --no-autoupdate --url http://127.0.0.1:6080 > /tmp/tunnel.log 2>&1 &
+            sleep 12
+
+            echo "===== REMOTE PHONE LINK ====="
+            grep -o 'https://[-a-zA-Z0-9.]*trycloudflare.com' /tmp/tunnel.log | head -1 || true
+            echo "============================="
+
+            echo "Session active for 30 minutes."
+            sleep 1800
             
