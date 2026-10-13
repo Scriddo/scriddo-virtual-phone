@@ -13,25 +13,19 @@ jobs:
     timeout-minutes: 45
 
     steps:
-      - name: Enable KVM
-        run: |
-          echo 'KERNEL=="kvm", GROUP="kvm", MODE="0666", OPTIONS+="static_node=kvm"' | sudo tee /etc/udev/rules.d/99-kvm4all.rules
-          sudo udevadm control --reload-rules
-          sudo udevadm trigger --name-match=kvm
-          ls -l /dev/kvm || true
-
-      - name: Install dependencies
+      - name: Install desktop and emulator dependencies
         run: |
           sudo apt-get update
           sudo apt-get install -y \
-            xvfb fluxbox x11vnc \
+            xvfb fluxbox x11vnc curl \
             libnss3 libx11-6 libx11-xcb1 libxcb1 \
             libxcomposite1 libxcursor1 libxi6 libxrandr2 \
             libxrender1 libxtst6 libglib2.0-0 libdbus-1-3 \
             libfontconfig1 libpulse0 libasound2t64 \
             libatk1.0-0 libatk-bridge2.0-0 libgtk-3-0 \
             libdrm2 libgbm1 libxfixes3 libxdamage1 \
-            libxkbcommon0 libwayland-client0 curl
+            libxkbcommon0 libwayland-client0
+
           git clone --depth 1 https://github.com/novnc/noVNC.git /tmp/noVNC
           git clone --depth 1 https://github.com/novnc/websockify.git /tmp/noVNC/utils/websockify
 
@@ -39,10 +33,11 @@ jobs:
         env:
           VNC_PASSWORD: ${{ secrets.VNC_PASSWORD }}
         run: |
-          test -n "$VNC_PASSWORD" || {
-            echo "Add VNC_PASSWORD in Settings > Secrets and variables > Actions."
+          if [ -z "$VNC_PASSWORD" ]; then
+            echo "Missing repository secret VNC_PASSWORD"
             exit 1
-          }
+          fi
+
           x11vnc -storepasswd "$VNC_PASSWORD" /tmp/vnc.pass
           chmod 600 /tmp/vnc.pass
 
@@ -53,7 +48,7 @@ jobs:
             -o /tmp/cloudflared
           chmod +x /tmp/cloudflared
 
-      - name: Start Android 16
+      - name: Boot Android 16 and start remote desktop
         uses: reactivecircus/android-emulator-runner@v2
         with:
           api-level: 36
@@ -70,39 +65,51 @@ jobs:
             adb shell getprop ro.build.version.release
             adb shell getprop ro.build.version.sdk
 
-            echo "Starting virtual desktop..."
+            echo "Starting virtual display..."
             Xvfb :99 -screen 0 1280x900x24 -ac >/tmp/xvfb.log 2>&1 &
             sleep 3
-            export DISPLAY=:99
 
+            export DISPLAY=:99
             fluxbox >/tmp/fluxbox.log 2>&1 &
             sleep 2
 
-            echo "Starting VNC..."
-            x11vnc -display :99 -localhost -rfbauth /tmp/vnc.pass -forever -shared -bg
+            echo "Starting VNC server..."
+            x11vnc -display :99 -localhost \
+              -rfbauth /tmp/vnc.pass -forever -shared -bg
 
             echo "Starting noVNC..."
-            /tmp/noVNC/utils/novnc_proxy --listen 127.0.0.1:6080 --vnc 127.0.0.1:5900 >/tmp/novnc.log 2>&1 &
+            /tmp/noVNC/utils/novnc_proxy \
+              --listen 127.0.0.1:6080 \
+              --vnc 127.0.0.1:5900 \
+              >/tmp/novnc.log 2>&1 &
 
             echo "Starting temporary tunnel..."
-            /tmp/cloudflared tunnel --no-autoupdate --url http://127.0.0.1:6080 >/tmp/tunnel.log 2>&1 &
+            /tmp/cloudflared tunnel \
+              --no-autoupdate \
+              --url http://127.0.0.1:6080 \
+              >/tmp/tunnel.log 2>&1 &
 
             URL=""
-            for i in $(seq 1 30); do
+            i=0
+
+            while [ "$i" -lt 30 ]; do
               URL=$(grep -oE 'https://[-a-zA-Z0-9.]+\.trycloudflare\.com' /tmp/tunnel.log | head -1 || true)
+
               if [ -n "$URL" ]; then
                 break
               fi
+
+              i=$((i + 1))
               sleep 2
             done
 
             if [ -z "$URL" ]; then
-              echo "No tunnel URL was created."
+              echo "Tunnel URL was not created."
               cat /tmp/tunnel.log
               exit 1
             fi
 
-            echo "Temporary browser link: ${URL}/vnc.html"
-            echo "Session will remain active for 25 minutes."
+            echo "Temporary browser URL: ${URL}/vnc.html"
+            echo "Session running for 25 minutes."
             sleep 1500
             
